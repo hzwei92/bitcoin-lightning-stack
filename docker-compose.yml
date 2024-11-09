@@ -1,0 +1,136 @@
+version: '3.8'
+
+services:
+  bitcoin-node:
+    image: ruimarinho/bitcoin-core:${BITCOIN_VERSION}
+    container_name: bitcoin-node
+    restart: unless-stopped
+    volumes:
+      - bitcoin_data:/bitcoin/.bitcoin
+      - ${BITCOIN_CONF_DIR}:/bitcoin/.bitcoin/bitcoin.conf:ro
+    ports:
+      - "${BITCOIN_P2P_PORT}:8333"
+      - "${BITCOIN_RPC_PORT}:8332"
+      - "${BITCOIN_ZMQ_BLOCK_PORT}:28332"
+      - "${BITCOIN_ZMQ_TX_PORT}:28333"
+    networks:
+      - bitcoin-lightning
+    command:
+      -printtoconsole=1
+      -server=1
+      -rpcallowip=::/0
+      -rpcbind=0.0.0.0
+      -rpcuser=${BITCOIN_RPC_USER}
+      -rpcpassword=${BITCOIN_RPC_PASSWORD}
+      -txindex=${BITCOIN_PRUNED:-0}
+      -prune=${BITCOIN_PRUNED:-0}
+      -pruneuntil=${BITCOIN_PRUNE_UNTIL:-0}
+      -dbcache=${BITCOIN_DBCACHE}
+      -maxmempool=${BITCOIN_MAX_MEMPOOL}
+      -maxconnections=${BITCOIN_MAX_CONNECTIONS}
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200m"
+        max-file: "10"
+
+  lnd-node:
+    image: lightninglabs/lnd:${LND_VERSION}
+    container_name: lnd-node
+    restart: unless-stopped
+    depends_on:
+      - bitcoin-node
+    volumes:
+      - lnd_data:/root/.lnd
+      - ${LND_CONF_DIR}:/root/.lnd/lnd.conf:ro
+    ports:
+      - "${LND_P2P_PORT}:9735"
+      - "${LND_GRPC_PORT}:10009"
+      - "${LND_REST_PORT}:8080"
+    networks:
+      - bitcoin-lightning
+    environment:
+      - NETWORK=mainnet
+      - CHAIN=bitcoin
+      - BACKEND=bitcoind
+      - DEBUGLEVEL=${LND_DEBUG_LEVEL}
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200m"
+        max-file: "10"
+
+  prometheus:
+    image: prom/prometheus:${PROMETHEUS_VERSION}
+    container_name: prometheus
+    restart: unless-stopped
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT}:9090"
+    networks:
+      - bitcoin-lightning
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+  grafana:
+    image: grafana/grafana:${GRAFANA_VERSION}
+    container_name: grafana
+    restart: unless-stopped
+    volumes:
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "${GRAFANA_PORT}:3000"
+    networks:
+      - bitcoin-lightning
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    depends_on:
+      - prometheus
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+  bitcoin-exporter:
+    image: jvstein/bitcoin-prometheus-exporter:latest
+    container_name: bitcoin-exporter
+    restart: unless-stopped
+    environment:
+      - BITCOIN_RPC_HOST=bitcoin-node
+      - BITCOIN_RPC_PORT=8332
+      - BITCOIN_RPC_USER=${BITCOIN_RPC_USER}
+      - BITCOIN_RPC_PASSWORD=${BITCOIN_RPC_PASSWORD}
+    ports:
+      - "9332:9332"
+    networks:
+      - bitcoin-lightning
+    depends_on:
+      - bitcoin-node
+
+networks:
+  bitcoin-lightning:
+    name: ${NETWORK_NAME}
+    driver: bridge
+
+volumes:
+  bitcoin_data:
+    name: ${NETWORK_NAME:-bitcoin-lightning-stack}_bitcoin_data
+  lnd_data:
+    name: ${NETWORK_NAME:-bitcoin-lightning-stack}_lnd_data
+  prometheus_data:
+    name: ${NETWORK_NAME:-bitcoin-lightning-stack}_prometheus_data
+  grafana_data:
+    name: ${NETWORK_NAME:-bitcoin-lightning-stack}_grafana_data
